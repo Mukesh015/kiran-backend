@@ -35,7 +35,9 @@ reportsRouter.get("/", async (req, res) => {
         AND offline_minutes >= 120
     `;
 
-
+    /**
+     * total count (for pagination)
+     */
     const [[{ total }]] = await pool.query(
       `SELECT COUNT(*) AS total ${baseQuery}`
     );
