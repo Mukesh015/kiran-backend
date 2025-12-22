@@ -32,7 +32,7 @@ reportsRouter.get("/", async (req, res) => {
         FROM Transaction_Table
       ) t
       WHERE offline_time IS NOT NULL
-        AND offline_minutes >= 120
+        AND offline_minutes >= 180
     `;
 
     /**
