@@ -13,27 +13,28 @@ reportsRouter.get("/", async (req, res) => {
      * Base query: get last two records per tank
      */
     const baseQuery = `
-      FROM (
-        SELECT
-          tank_no,
-          date_time AS online_time,
-          LAG(date_time) OVER (
-            PARTITION BY tank_no
-            ORDER BY date_time
-          ) AS offline_time,
-          TIMESTAMPDIFF(
-            MINUTE,
-            LAG(date_time) OVER (
-              PARTITION BY tank_no
-              ORDER BY date_time
-            ),
-            date_time
-          ) AS offline_minutes
-        FROM Transaction_Table
-      ) t
-      WHERE offline_time IS NOT NULL
-        AND offline_minutes >= 260
-    `;
+  FROM (
+    SELECT
+      tank_no,
+      date_time AS online_time,
+      LAG(date_time) OVER (
+        PARTITION BY tank_no
+        ORDER BY date_time
+      ) AS offline_time,
+      TIMESTAMPDIFF(
+        MINUTE,
+        LAG(date_time) OVER (
+          PARTITION BY tank_no
+          ORDER BY date_time
+        ),
+        date_time
+      ) AS offline_minutes
+    FROM Transaction_Table
+    WHERE date_time <= NOW()   -- 🔥 CRITICAL FIX
+  ) t
+  WHERE offline_time IS NOT NULL
+    AND offline_minutes >= 120
+`;
 
     /**
      * total count (for pagination)
