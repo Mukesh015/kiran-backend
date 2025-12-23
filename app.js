@@ -22,7 +22,8 @@ import updateInstallationRouter from "./routes/updateInstallation.js";
 import updateDataRouter from "./routes/updateData.js";
 import authRouter from "./routes/auth.js"; // ✅ auth (username+password, JWT)
 import reportsRouter from "./routes/reports.js";
-
+import smsLogRouter from "./routes/smsLog.js";
+import userRouter from "./routes/user.js";
 
 dotenv.config();
 
@@ -55,6 +56,9 @@ app.get("/", (req, res) => {
 // -------------------------------------------------------
 
 // 1) Tank master
+
+app.use("/api/user", userRouter);
+
 app.use("/api/tank-master", tankMasterRouter);
 
 // 2) Notifications (last 15 days from tank_status)
@@ -83,7 +87,7 @@ app.use("/api/transactions-history/basic", transactionHistoryBasicRouter);
 app.use("/api/tanks", tankHistoryByTankRouter);
 
 // 9) Users (old users router, if you still use it)
-app.use("/api/users", usersRouter);
+// app.use("/api/users", usersRouter);
 
 // 10) Tank update
 app.use("/api/tank-update", tankUpdateRouter);
@@ -97,10 +101,8 @@ app.use("/api/update-data", updateDataRouter);
 // 13) AUTH (username/password + JWT)
 app.use("/api/auth", authRouter);
 
-
 app.use("/api/tank/logs", reportsRouter);
-
-
+app.use("/api/tank/sms-logs", smsLogRouter);
 
 // ---------- 404 fallback ----------
 app.use((req, res) => {
