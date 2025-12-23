@@ -33,7 +33,7 @@ reportsRouter.get("/", async (req, res) => {
     WHERE date_time <= NOW()   -- 🔥 CRITICAL FIX
   ) t
   WHERE offline_time IS NOT NULL
-    AND offline_minutes >= 180
+    AND offline_minutes >= 120
 `;
 
 
