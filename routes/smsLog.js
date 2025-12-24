@@ -3,52 +3,67 @@ import express from "express";
 
 const smsLogRouter = express.Router();
 
-/**
- * GET high & low level tank alerts
- * One response per tank per user (paginated)
- */
 smsLogRouter.get("/", async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page) || 1, 1);
     const limit = Math.min(parseInt(req.query.limit) || 10, 100);
     const offset = (page - 1) * limit;
 
-    /* 🔢 total count */
+    /* ==========================
+       TOTAL COUNT (LATEST ALERTS)
+    ========================== */
     const countQuery = `
       SELECT COUNT(*) AS total
-      FROM tank_status ts
-      CROSS JOIN users u
-      WHERE ts.tank_alert_message IN ('High level', 'Low level')
-        AND ts.disable_alert = 0
+      FROM (
+        SELECT 1
+        FROM tank_status ts
+        WHERE ts.tank_alert_message IN ('High level', 'Low level')
+          AND ts.disable_alert = 0
+        GROUP BY ts.tank_no, ts.tank_alert_message
+      ) x
     `;
 
     const [[{ total }]] = await pool.query(countQuery);
 
-    /* 📄 paginated data */
+    /* ==========================
+       DATA (LATEST ALERT × USERS)
+    ========================== */
     const dataQuery = `
       SELECT
-        ts.id AS tank_status_id,
-        ts.tank_no,
-        ts.location,
-        ts.tank_alert_message,
-        ts.current_time,
+        t.id,
+        t.tank_no,
+        t.location,
+        t.tank_alert_message,
+        t.current_time,
 
-        u.id AS user_id,
-        u.name AS user_name,
+        u.id    AS user_id,
+        u.name  AS user_name,
         u.phone AS user_phone
 
-      FROM tank_status ts
+      FROM (
+        SELECT
+          ts.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY ts.tank_no, ts.tank_alert_message
+            ORDER BY ts.current_time DESC
+          ) AS rn
+        FROM tank_status ts
+        WHERE ts.tank_alert_message IN ('High level', 'Low level')
+          AND ts.disable_alert = 0
+      ) t
       CROSS JOIN users u
-      WHERE ts.tank_alert_message IN ('High level', 'Low level')
-        AND ts.disable_alert = 0
-      ORDER BY ts.current_time DESC
+      WHERE t.rn = 1
+      ORDER BY t.current_time DESC
       LIMIT ? OFFSET ?
     `;
 
     const [rows] = await pool.query(dataQuery, [limit, offset]);
 
+    /* ==========================
+       RESPONSE (YOUR STRUCTURE)
+    ========================== */
     const response = rows.map((row) => ({
-      id: row.tank_status_id,
+      id: row.id,
       tank_name: row.tank_no,
       location: row.location,
       alert: row.tank_alert_message,
