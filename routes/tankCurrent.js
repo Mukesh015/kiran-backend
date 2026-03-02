@@ -49,7 +49,7 @@ function statusFromLimits(actualL, minL, maxL) {
  * Helper: build one tank object with 30-minute rule applied
  */
 function buildTankResponseRow(row) {
-  const STALE_TIMEOUT_MINUTES = 10; // testing (change to 30 in production)
+  const STALE_TIMEOUT_MINUTES = 15; // testing (change to 15 in production)
 
   const minutesSinceLast =
     row.minutes_since_last != null ? Number(row.minutes_since_last) : null;
