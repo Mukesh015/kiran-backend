@@ -49,84 +49,88 @@ function statusFromLimits(actualL, minL, maxL) {
  * Helper: build one tank object with 30-minute rule applied
  */
 function buildTankResponseRow(row) {
-  const now = new Date();
+  const STALE_TIMEOUT_MINUTES = 10; // testing (change to 30 in production)
+
+  const minutesSinceLast =
+    row.minutes_since_last != null ? Number(row.minutes_since_last) : null;
+
+  const isStale =
+    minutesSinceLast == null || minutesSinceLast > STALE_TIMEOUT_MINUTES;
+
   const lastTime = row.date_time ? new Date(row.date_time) : null;
 
-  let minutesSinceLast = null;
-  let isStale = true;
-  if (lastTime && !Number.isNaN(lastTime.getTime())) {
-    minutesSinceLast = (now.getTime() - lastTime.getTime()) / (1000 * 60);
-    isStale = minutesSinceLast > 30; // > 30 minutes => stale
-  } else {
-    isStale = true;
-  }
-
   const tankNo = row.tank_no;
-  const D = Number(row.diameter_breadth ?? 0); // m
-  const L = Number(row.length ?? 0); // m
+  const D = Number(row.diameter_breadth ?? 0);
+  const L = Number(row.length ?? 0);
   const capacityL = row.tank_volume != null ? Number(row.tank_volume) : null;
-  const sensor =
-    row.ultra_height != null ? Number(row.ultra_height) : null;
 
-  // water depth from bottom
+  const sensor = row.ultra_height != null ? Number(row.ultra_height) : null;
+
+  // -------------------------
+  // DEPTH CALCULATION
+  // -------------------------
   let depth = null;
+
   if (sensor != null) {
     if (tankNo === "FIRE-TANK") {
-      // 🔥 FIRE-TANK: rectangular height = 17.9 - ultra_height
       const MAX_HEIGHT_M = 17.9;
       depth = MAX_HEIGHT_M - sensor;
-      if (depth < 0) depth = 0;
-      if (depth > MAX_HEIGHT_M) depth = MAX_HEIGHT_M;
+      depth = Math.max(0, Math.min(depth, MAX_HEIGHT_M));
     } else if (D > 0) {
-      // default cylindrical tanks: depth = D - sensor
       depth = D - sensor;
-      if (depth < 0) depth = 0;
-      if (depth > D) depth = D;
+      depth = Math.max(0, Math.min(depth, D));
     }
   }
 
-  // raw volume from last reading
+  // -------------------------
+  // VOLUME CALCULATION
+  // -------------------------
   let rawVolumeL = null;
+
   if (depth != null) {
     if (tankNo === "FIRE-TANK") {
-      // 🔥 FIRE-TANK rectangular volume:
-      // volume (m³) = 8.9 × 5.15 × depth
       const WIDTH_M = 8.9;
       const LENGTH_M = 5.15;
-      const volM3 = WIDTH_M * LENGTH_M * depth;
-      rawVolumeL = volM3 * 1000; // to liters
+      rawVolumeL = WIDTH_M * LENGTH_M * depth * 1000;
     } else if (D > 0 && L > 0) {
-      const volM3 = horizontalCylinderVolume(D, L, depth);
-      rawVolumeL = volM3 * 1000; // to liters
+      rawVolumeL = horizontalCylinderVolume(D, L, depth) * 1000;
     }
   }
 
   const maxL =
-    row.upper_safe_limit_pct != null
-      ? Number(row.upper_safe_limit_pct)
-      : null;
+    row.upper_safe_limit_pct != null ? Number(row.upper_safe_limit_pct) : null;
+
   const minL =
-    row.lower_safe_limit_pct != null
-      ? Number(row.lower_safe_limit_pct)
-      : null;
+    row.lower_safe_limit_pct != null ? Number(row.lower_safe_limit_pct) : null;
 
   let effectiveVolumeL = rawVolumeL;
   let tank_status;
   let tank_alert_message;
 
   if (isStale) {
-    // *** 30-minute rule ***
     effectiveVolumeL = 0;
     tank_status = "Inactive";
-    tank_alert_message = "No reading in last 30 minutes";
+    tank_alert_message =
+      "No reading in last " + STALE_TIMEOUT_MINUTES + " minute(s)";
   } else {
     const s = statusFromLimits(rawVolumeL, minL, maxL);
     tank_status = s.tank_status;
     tank_alert_message = s.tank_alert_message;
   }
 
+  if (isStale) {
+    console.warn(
+      `[STALE TANK DETECTED]
+        Device: ${row.device_id}
+        Tank: ${row.tank_no}
+        Location: ${row.location}
+        Minutes Since Last: ${minutesSinceLast}
+        Last Update: ${row.date_time}`,
+    );
+  }
+
   let fillPct = null;
-  if (capacityL != null && capacityL > 0 && effectiveVolumeL != null) {
+  if (capacityL && effectiveVolumeL != null) {
     fillPct = Number(((effectiveVolumeL / capacityL) * 100).toFixed(1));
   }
 
@@ -136,9 +140,9 @@ function buildTankResponseRow(row) {
     location: row.location,
 
     last_updated: lastTime ? lastTime.toISOString() : null,
-    minutes_since_last:
-      minutesSinceLast != null ? Number(minutesSinceLast.toFixed(1)) : null,
-    stale: isStale,
+
+    minutes_since_last: minutesSinceLast,
+    stale: isStale, // frontend can use this to show border red or green
 
     geometry: {
       diameter_m: D,
@@ -176,38 +180,40 @@ function buildTankResponseRow(row) {
  *  - computed volume & fill%
  *  - 30-minute rule (stale => 0, Inactive)
  */
+
 router.get("/all", async (_req, res) => {
   try {
     const [rows] = await pool.query(
       `
-      SELECT
-        m.device_id,
-        m.tank_no,
-        m.location,
-        p.diameter_breadth,
-        p.length,
-        p.tank_volume,
-        p.upper_safe_limit_pct,
-        p.lower_safe_limit_pct,
-        t.ultra_height,
-        t.date_time
-      FROM Master_Tables m
-      LEFT JOIN Tank_Parameters p
-        ON m.tank_no = p.tank_no
-      LEFT JOIN (
-        SELECT tt1.*
-        FROM Transaction_Table tt1
-        INNER JOIN (
-          SELECT device_id, MAX(date_time) AS max_time
-          FROM Transaction_Table
-          GROUP BY device_id
-        ) tmax
-          ON tt1.device_id = tmax.device_id
-         AND tt1.date_time = tmax.max_time
-      ) t
-        ON t.device_id = m.device_id
-      ORDER BY m.device_id;
-      `
+SELECT
+  m.device_id,
+  m.tank_no,
+  m.location,
+  p.diameter_breadth,
+  p.length,
+  p.tank_volume,
+  p.upper_safe_limit_pct,
+  p.lower_safe_limit_pct,
+  t.ultra_height,
+  t.date_time,
+  TIMESTAMPDIFF(MINUTE, t.date_time, NOW()) AS minutes_since_last
+FROM Master_Tables m
+LEFT JOIN Tank_Parameters p
+  ON m.tank_no = p.tank_no
+LEFT JOIN (
+  SELECT tt1.*
+  FROM Transaction_Table tt1
+  INNER JOIN (
+    SELECT device_id, MAX(date_time) AS max_time
+    FROM Transaction_Table
+    GROUP BY device_id
+  ) tmax
+    ON tt1.device_id = tmax.device_id
+   AND tt1.date_time = tmax.max_time
+) t
+  ON t.device_id = m.device_id
+ORDER BY m.device_id;
+      `,
     );
 
     const data = rows.map((r) => buildTankResponseRow(r));
@@ -263,7 +269,7 @@ router.get("/current/:device_id", async (req, res) => {
       WHERE m.device_id = ?
       LIMIT 1;
       `,
-      [deviceId, deviceId]
+      [deviceId, deviceId],
     );
 
     if (!rows.length) {
