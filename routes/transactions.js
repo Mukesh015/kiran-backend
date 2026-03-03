@@ -1,18 +1,36 @@
-// routes/transactions.js
 import express from "express";
 import { pool } from "../db.js";
 import axios from "axios"; // required for calling update-data
 
 const router = express.Router();
 
+function getLocalISTTimestamp() {
+  const now = new Date();
+
+  return now
+    .toLocaleString("sv-SE", {
+      timeZone: "Asia/Kolkata",
+      hour12: false,
+    })
+    .replace("T", " ");
+}
+
 /**
  * POST /api/transactions
  */
 router.post("/", async (req, res) => {
   try {
-    const { device_id, tank_no, location, ultra_height, date_time } = req.body;
+    const { device_id, tank_no, location, ultra_height } = req.body;
 
-    // Basic validation
+    // Keep IST formatted time
+    const localTime = getLocalISTTimestamp();
+
+    // 🔥 New timestamp in milliseconds
+    const lastInserted = Date.now();
+
+    console.log("Using IST time:", localTime);
+    console.log("Last Inserted (ms):", lastInserted);
+
     if (!device_id || !tank_no || !location) {
       return res.status(400).json({
         ok: false,
@@ -21,14 +39,12 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // Check device exists
     const [devRows] = await pool.query(
       "SELECT 1 FROM Master_Tables WHERE device_id = ? LIMIT 1",
-      [device_id]
+      [device_id],
     );
 
     if (devRows.length === 0) {
-      console.warn("[transactions] UNKNOWN_DEVICE:", device_id);
       return res.status(400).json({
         ok: false,
         error: "UNKNOWN_DEVICE_ID",
@@ -36,17 +52,17 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // Insert or update the transaction row
     const sql = `
       INSERT INTO Transaction_Table
-        (device_id, tank_no, location, ultra_height, date_time)
+        (device_id, tank_no, location, ultra_height, date_time, last_inserted)
       VALUES
-        (?, ?, ?, ?, COALESCE(?, NOW()))
+        (?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
-        tank_no      = VALUES(tank_no),
-        location     = VALUES(location),
-        ultra_height = VALUES(ultra_height),
-        date_time    = VALUES(date_time);
+        tank_no       = VALUES(tank_no),
+        location      = VALUES(location),
+        ultra_height  = VALUES(ultra_height),
+        date_time     = VALUES(date_time),
+        last_inserted = VALUES(last_inserted);
     `;
 
     const [result] = await pool.query(sql, [
@@ -54,39 +70,30 @@ router.post("/", async (req, res) => {
       tank_no,
       location,
       ultra_height ?? null,
-      date_time ?? null,
+      localTime,
+      lastInserted,
     ]);
 
-    // =======================================================================
-    // 🔥 NON-BLOCKING call to /api/update-data (to populate tank_status)
-    // =======================================================================
-
+    // Non-blocking call
     const baseUrl = `http://127.0.0.1:${process.env.PORT || 3000}`;
-    const payload = {
-      device_id,
-      tank_no,
-      location,
-      ultra_height,
-      date_time,
-    };
 
-    // Non-blocking fire-and-forget call
     axios
-      .post(`${baseUrl}/api/update-data`, payload)
-      .then((resp) => {
-        console.log("[transactions] ✔ update-data triggered:", resp.data);
+      .post(`${baseUrl}/api/update-data`, {
+        device_id,
+        tank_no,
+        location,
+        ultra_height,
+        date_time: localTime,
+        last_inserted: lastInserted,
       })
       .catch((err) => {
-        console.error("[transactions] ❌ update-data FAILED:", err.message);
+        console.error("[transactions] update-data FAILED:", err.message);
       });
-
-    // =======================================================================
 
     return res.json({
       ok: true,
       affectedRows: result.affectedRows,
-      message:
-        result.affectedRows === 1 ? "INSERTED" : "UPDATED_EXISTING_ROW",
+      message: result.affectedRows === 1 ? "INSERTED" : "UPDATED_EXISTING_ROW",
       updateDataTriggered: true,
     });
   } catch (err) {
@@ -110,6 +117,7 @@ router.get("/", async (req, res) => {
       `
         SELECT
           device_id,
+          last_inserted,
           tank_no,
           location,
           ultra_height,
@@ -118,7 +126,7 @@ router.get("/", async (req, res) => {
         ORDER BY date_time DESC
         LIMIT ?;
       `,
-      [limit]
+      [limit],
     );
 
     return res.json({ ok: true, count: rows.length, data: rows });
